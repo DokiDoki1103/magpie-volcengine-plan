@@ -94,7 +94,7 @@ ok(r5.status === 429 && saved.length === before, "普通限流 429 不触发暂�
 
 // 7) 每账号自定义名称和 Base URL
 const method = plugin.auth.methods[0]
-ok(method.prompts.map((p) => p.key).join() === "type,account", "登录两步：订阅类型下拉 + 一行输入")
+ok(method.prompts.map((p) => p.key).join() === "type,baseURL,name,akAuto,skAuto,apiKey,expires,ak,sk,region", "登录：分项输入（订阅类型下拉 + 各项，按类型跳过无关的）")
 ok(method.prompts[0].type === "select" && method.prompts[0].options.map((o) => o.value).join() === "auto,plan,coding,custom", "下拉选项：自动识别 / plan / coding / 自定义地址")
 const r6 = await method.authorize({ account: "  备用1  https://example.com/api/plan/v1/  ark-x " })
 ok(r6.type === "success" && r6.key === "ark-x" && r6.metadata.name === "备用1", "三项：名称存 metadata.name，key 去空白")
@@ -112,8 +112,8 @@ ok((await method.authorize({ account: "  " })).type === "failed", "空输入返�
 ok((await method.authorize({ account: "a b c ark-d" })).type === "failed", "多于两项非地址的内容返回 failed")
 ok((await method.authorize({ account: "https://a/v1 https://b/v1 ark-d" })).type === "failed", "两个地址返回 failed")
 ok((await method.authorize({ account: "https://a/v1" })).type === "failed", "只有地址没有 key 返回 failed")
-const lineP = method.prompts.find((p) => p.key === "account")
-ok(lineP.validate("") !== undefined && lineP.validate("主力 ark-x") === undefined, "输入框校验：空不通过、合法通过")
+const dateP = method.prompts.find((p) => p.key === "expires")
+ok(dateP.validate("") === undefined && dateP.validate("2027-01-06") === undefined && dateP.validate("abc") !== undefined, "输入框校验：到期日可省略、合法通过、乱写不通过")
 
 const custom = await plugin.auth.loader(async () => ({ type: "api", key: "k", metadata: { baseURL: "https://custom.example/v1" } }))
 ok(custom.baseURL === "https://custom.example/v1", "loader 用账号自己的 Base URL")
@@ -151,7 +151,7 @@ const e3 = await method.authorize({ account: "ark-k" })
 ok(!("expiresAt" in e3.metadata), "没填到期日不写 expiresAt")
 ok((await method.authorize({ account: "ark-k 2026-02-30" })).type === "failed", "非法到期日返回 failed")
 ok((await method.authorize({ account: "ark-k 2026-12-01 2026-12-31" })).type === "failed", "两个到期日返回 failed")
-ok(lineP.validate("ark-k 2026-02-30") !== undefined, "输入框校验也拦非法日期")
+ok(dateP.validate("2026-02-30") !== undefined && dateP.validate("2027-13-01") !== undefined, "输入框校验也拦非法日期")
 
 const future = new Date(Date.now() + 30 * 86400 * 1000).toISOString()
 const past = new Date(Date.now() - 86400 * 1000).toISOString()

@@ -45,7 +45,18 @@ export function extractAccounts(list, { now = Date.now() } = {}) {
   return { accounts, ignored, renamed }
 }
 
-// 登录时要粘贴的那一行：名称 key 到期日
+// 用来显示 / 核对的一行：名称 key 到期日（登录是分项填写的，这一行只是方便对照）
 export function accountLine(a, { mask = false } = {}) {
   return [a.name, mask ? `***${a.key.slice(-4)}` : a.key, a.date].filter(Boolean).join(" ")
+}
+
+// 插件登录第一步"订阅类型"下拉的编号（从 1 开始），顺序要和插件里 LOGIN_PROMPTS 的选项一致：
+// 自动识别、plan、coding、自定义地址。
+export const LOGIN_SELECT = { auto: 1, plan: 2, coding: 3, custom: 4 }
+
+// 手填 API key 的账号，登录时依次要回答的项（和插件的分项输入一一对应）：
+//   订阅类型编号、名称、API key、到期日、AccessKey ID（这里留空，所以不再问 Secret 和地区）
+// 没有的项给空行（回车跳过）。
+export function loginAnswers(a) {
+  return [LOGIN_SELECT[a.kind], a.name ?? "", a.key, a.date ?? "", ""]
 }

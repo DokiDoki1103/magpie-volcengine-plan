@@ -36,19 +36,22 @@ kubectl exec deploy/magpie -- /magpie plugin add github:DokiDoki1103/magpie-volc
 
 ## 添加账号
 
-在 magpie 里点"添加账号"，两步：
+在 magpie 里点"添加账号"，先选**订阅类型**，再一项一项填（界面里是"下一步"，终端里是依次提示）。**只会问跟这个类型有关的项**，其余自动跳过；**Secret 和 API key 用密码框，输入时不显示**。
 
-1. **订阅类型**下拉：`自动识别`（推荐）/ `plan` / `coding` / `自定义地址`。
-2. **一行**，空格分隔。
+| 订阅类型 | 依次问的项 |
+|---|---|
+| `自动识别`（推荐） | 名称（可省略）→ AccessKey ID → Secret → 地区（可省略） |
+| `plan` / `coding` | 名称（可省略）→ API key → 订阅到期日（可省略）→ AccessKey ID（可省略；填了才再问 Secret 和地区） |
+| `自定义地址` | 先问 Base URL，其余同 `plan` / `coding` |
 
 ### 推荐：自动识别，只填 AccessKey
 
-下拉选 `自动识别`，这一行写：
+下拉选 `自动识别`，然后：
 
-```text
-主力 ak=AKLTxxxx sk=xxxx          # 名称可省略
-ak=AKLTxxxx sk=xxxx
-```
+1. 名称：想怎么叫都行，可省略（同名再次添加会替换旧账号，不能有空格）。
+2. AccessKey ID：火山控制台 → 访问控制 → 访问密钥。
+3. Secret AccessKey（密码框）。
+4. 地区：可省略，默认 `cn-beijing`。
 
 插件会自己：
 
@@ -61,25 +64,12 @@ API key 被你在火山控制台轮换后，插件收到 401 会**自动重新�
 
 ### 手填 API key
 
-下拉选 `plan` / `coding`，这一行写：
+下拉选 `plan` / `coding`（地址不一样时选 `自定义地址`），然后：
 
-```text
-名称 API-key 到期日 ak=AccessKeyID sk=SecretAccessKey
-```
-
-```text
-主力 ark-xxxxxxxx                                   # 最简：名称 + key
-主力 ark-xxxxxxxx 2027-01-06                        # 手填到期日
-主力 ark-xxxxxxxx ak=AKLTxxxx sk=xxxx               # 查真实额度，到期时间自动读
-主力 ark-xxxxxxxx ak=AKLTxxxx sk=xxxx region=cn-shanghai
-ark-xxxxxxxx                                        # 只有 key，标题用 magpie 默认的 "API key …尾号"
-```
-
-- 有 `ak=` `sk=` 时，行里只剩一项：像 API key（`ark-` 开头、UUID、32 位以上的字母数字）就是 key，否则当作名称，走自动识别。
-- `名称` 就是卡片标题，也是账号 ID：同名再次添加会替换旧账号。名称里不能有空格。
-- 到期日格式 `YYYY-MM-DD`，按北京时间当天 23:59:59 到期；读得到真实到期时间就不需要填。
-- `ak=` 和 `sk=` 要一起写；位置随意，`region=` 默认 `cn-beijing`。
-- 选了"自定义地址"时，在这一行里再写一个 `https://…` 的 Base URL。
+1. 名称：可省略。没填名称，卡片标题用 magpie 默认的 "API key …尾号"。
+2. API key（密码框）：`ark-` 开头，聊天用。
+3. 订阅到期日：`YYYY-MM-DD`，按北京时间当天 23:59:59 到期；可省略，填了 AccessKey 就能读到真实的，不用填。
+4. AccessKey ID：可省略。填了就会再问 Secret 和地区，之后读真实额度和到期。
 
 **换 key / 续费后改日期**：自动识别的账号都不用管；手填的账号用同名重新添加一次。
 
@@ -89,7 +79,7 @@ ark-xxxxxxxx                                        # 只有 key，标题用 mag
 
 1. 火山控制台 → 访问控制（IAM）→ 访问密钥，创建一对 AK/SK。
 2. 给这个 IAM 用户授予方舟（ark）的权限。**自动识别要读取 API key 明文**（`ListApiKeys` + `GetRawApiKey`），需要比"只读额度"更大的权限；只想查额度、聊天仍手填 key 的话，只读权限就够。
-3. 添加账号时带上 `ak=… sk=…`。
+3. 添加账号时填上 AccessKey ID 和 Secret。
 
 **每个火山账号各自一套 AccessKey。** 只给你最看重的几个账号配也行，其余照旧。
 
@@ -158,7 +148,9 @@ node scripts/import-accounts.mjs keys.json --skip 13306063178,18197266405
 node scripts/import-accounts.mjs keys.json --yes --only 18392357709
 ```
 
-只想要可粘贴的行，不自动导入：`node scripts/export-for-magpie.mjs keys.json`。
+导入脚本是按固定顺序往 `magpie plugin login` 灌答案的（订阅类型编号、名称、API key、到期日、AccessKey 留空），顺序必须和插件的登录提示一致，`npm test` 里有测试盯着这一点。**第一次用请先 `--only` 导一个**，确认 magpie 的 CLI 接受这样的输入再全量。
+
+只想要整理好的清单、自己手动添加：`node scripts/export-for-magpie.mjs keys.json`。
 
 导出的 `keys.json` 里有明文 key，用完请删除，不要提交（`.gitignore` 已忽略）。
 
@@ -181,7 +173,8 @@ npm test
 
 - `test/plugin.test.mjs`：429 暂停、永久错误、手填到期、登录解析。
 - `test/quota.test.mjs`：控制面签名、窗口解析、三条取数路径、套餐到期自动读取与拦截、与 429 暂停合并。
-- `test/discover.test.mjs`：自动识别（Agent / Coding / 团队版、多把 key 的选择、失败分类）、登录解析、识别结果缓存与并发、key 被轮换后重试、明文 key 不落盘。
+- `test/discover.test.mjs`：自动识别（Agent / Coding / 团队版、多把 key 的选择、失败分类）、分项登录（每种类型问哪些项、密码框、校验）、识别结果缓存与并发、key 被轮换后重试、明文 key 不落盘。
+- `test/scripts.test.mjs`：批量导入脚本灌的答案和插件登录提示的顺序对齐（模拟 CLI 逐项提问）。
 
 测试里的接口返回是 mock。个人版 Agent Plan、"Coding 已回收"和自动识别流程的样本取自真实返回（见上面的验证情况，已去掉账号标识）；Coding Plan 有效订阅、团队版席位、自动续费的样本来自官方文档和社区工具的代码，**不等于火山的真实返回**。签名的单元测试是回归向量加独立推导的对照，只保证以后改动不会悄悄变样；签名与火山一致这件事，已经由上面的真实调用验证过。
 

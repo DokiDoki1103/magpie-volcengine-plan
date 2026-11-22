@@ -181,6 +181,52 @@ const method = plugin.auth.methods[0]
   ok(r3.key === "ark-k" && r3.metadata.mode === undefined && r3.metadata.baseURL === "https://ark.cn-beijing.volces.com/api/plan", "authorize：手填 key 的账号行为不变")
 }
 
+// ---- 7b) 分项输入：每种类型会问哪些项、密码框、校验、authorize ----
+{
+  const P = method.prompts
+  const visible = (inputs) => P.filter((p) => !p.condition || p.condition(inputs)).map((p) => p.key).join()
+  ok(visible({ type: "auto" }) === "type,name,akAuto,skAuto", "分项输入 自动识别：只问 名称、AccessKey ID、Secret（不问 API key、到期日）")
+  ok(visible({ type: "auto", akAuto: "AKLT" }) === "type,name,akAuto,skAuto,region", "分项输入 自动识别：填了 AccessKey 才问地区")
+  ok(visible({ type: "plan" }) === "type,name,apiKey,expires,ak", "分项输入 手填：名称、API key、到期日、AccessKey（可省略）；没填 AccessKey 就不问 Secret 和地区")
+  ok(visible({ type: "coding", ak: "AKLT" }) === "type,name,apiKey,expires,ak,sk,region", "分项输入 手填：填了 AccessKey 再问 Secret 和地区")
+  ok(visible({ type: "custom" }) === "type,baseURL,name,apiKey,expires,ak", "分项输入 自定义地址：多问一个 Base URL")
+  ok(visible({ type: "plan", ak: "  " }) === "type,name,apiKey,expires,ak", "分项输入：AccessKey 只有空白当作没填")
+  const by = Object.fromEntries(P.map((p) => [p.key, p]))
+  ok(by.skAuto.type === "password" && by.sk.type === "password" && by.apiKey.type === "password", "分项输入：Secret 和 API key 用密码框（输入时不显示）")
+  ok(by.akAuto.type === "text" && by.ak.type === "text", "分项输入：AccessKey ID 不是机密，用普通输入框，方便核对")
+  ok(by.akAuto.validate("") !== undefined && by.akAuto.validate("AK LT") !== undefined && by.akAuto.validate("AKLTx") === undefined, "校验：自动识别的 AccessKey ID 必填、不能有空格")
+  ok(by.skAuto.validate("") !== undefined && by.skAuto.validate("a b") !== undefined && by.skAuto.validate("s3cr3t==") === undefined, "校验：Secret 必填、不能有空格")
+  ok(by.apiKey.validate("") !== undefined && by.apiKey.validate("ark-x") === undefined, "校验：手填的 API key 必填")
+  ok(by.ak.validate("") === undefined && by.ak.validate("A B") !== undefined, "校验：手填时 AccessKey ID 可省略，但不能有空格")
+  ok(by.name.validate("") === undefined && by.name.validate("主 力") !== undefined && by.name.validate("主力,1") !== undefined && by.name.validate("主力1") === undefined, "校验：名称可省略，不能有空格、逗号、竖线")
+  ok(by.baseURL.validate("ftp://x") !== undefined && by.baseURL.validate("https://x.example/api") === undefined, "校验：Base URL 要 http(s):// 开头")
+  ok(by.region.validate("cn shanghai") !== undefined && by.region.validate("") === undefined, "校验：地区可省略，不能有空格")
+
+  // authorize：分项输入
+  const a1 = await method.authorize({ type: "auto", name: "主力", akAuto: "AKLTf", skAuto: "secf", region: "cn-shanghai" })
+  ok(a1.type === "success" && a1.key === "AKLTf" && a1.accountId === "主力" && a1.metadata.mode === "auto" && a1.metadata.secretAccessKey === "secf" && a1.metadata.region === "cn-shanghai", "authorize 分项 自动识别：存 AccessKey，mode=auto，key 是 AccessKey ID")
+  ok(!("baseURL" in a1.metadata) && !("expiresAt" in a1.metadata), "authorize 分项 自动识别：不存地址和到期日（运行时识别）")
+  const a2 = await method.authorize({ type: "coding", name: "备用", apiKey: "ark-m", expires: "2027-01-06", ak: "AKLTg", sk: "secg" })
+  ok(a2.key === "ark-m" && a2.metadata.baseURL === "https://ark.cn-beijing.volces.com/api/coding" && a2.metadata.expiresAt === "2027-01-06T15:59:59.000Z" && a2.metadata.accessKeyID === "AKLTg" && a2.metadata.mode === undefined, "authorize 分项 手填 coding：key、地址、到期日、AccessKey 都对，不是自动识别")
+  const a3 = await method.authorize({ type: "plan", apiKey: "ark-n" })
+  ok(a3.key === "ark-n" && a3.accountId === undefined && a3.metadata.baseURL === "https://ark.cn-beijing.volces.com/api/plan" && !("accessKeyID" in a3.metadata), "authorize 分项 手填 plan：只填 API key，名称、到期、AccessKey 都可省略")
+  const a4 = await method.authorize({ type: "custom", baseURL: "https://my.example/api/", apiKey: "ark-c" })
+  ok(a4.metadata.baseURL === "https://my.example/api", "authorize 分项 自定义地址：Base URL 去掉末尾 /")
+  const failed1 = async (inputs) => (await method.authorize(inputs)).type === "failed"
+  ok(await failed1({ type: "plan" }), "authorize 分项：手填没有 API key 报错")
+  ok(await failed1({ type: "auto", name: "x" }), "authorize 分项：自动识别没有 AccessKey 报错")
+  ok(await failed1({ type: "auto", akAuto: "AKLT" }), "authorize 分项：只有 AccessKey ID 没有 Secret 报错")
+  ok(await failed1({ type: "plan", apiKey: "ark-n", ak: "AKLT" }), "authorize 分项：手填时只填了 AccessKey ID 没填 Secret 报错")
+  ok(await failed1({ type: "plan", apiKey: "ark-n", expires: "2026-02-30" }), "authorize 分项：非法到期日报错")
+  ok(await failed1({ type: "plan", apiKey: "ark-n", name: "主 力" }), "authorize 分项：名称有空格报错")
+  ok(await failed1({ type: "custom", apiKey: "ark-n" }), "authorize 分项：自定义地址没填 Base URL 报错")
+  // 自动识别时又带了 API key（不会通过界面出现，但 authorize 要拒绝）
+  ok(await failed1({ type: "auto", akAuto: "AKLT", skAuto: "s", apiKey: "ark-n" }) === false, "authorize 分项：自动识别忽略多余的 apiKey 字段（界面不会问它）")
+  // 单行入口仍然可用（脚本和测试用）
+  const one = await method.authorize({ type: "plan", account: "主力 ark-o 2027-01-06" })
+  ok(one.key === "ark-o" && one.accountId === "主力", "单行入口：inputs.account 仍然可用")
+}
+
 // ---- 8) 插件：自动识别账号的 loader / fetch ----
 const autoAuth = (over = {}) => ({ type: "api", key: "AKLTauto", metadata: { name: "主力", mode: "auto", accessKeyID: "AKLTauto", secretAccessKey: "sk-auto", ...over } })
 const MSG = "https://ark.cn-beijing.volces.com/api/plan/v1/messages"

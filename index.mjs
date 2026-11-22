@@ -316,6 +316,133 @@ async function quotaFor(auth, defaultBase, signal) {
   return value
 }
 
+// ---- 登录输入项 ----
+// 一项一项问（magpie 界面是"下一步"，终端是依次提示）。下拉选了类型后，只问和这个类型有关的项：
+//   自动识别：名称 → AccessKey ID → Secret（密码框）→ 地区
+//   手填 key：（自定义地址时先问 Base URL）名称 → API key（密码框）→ 到期日 → AccessKey ID（可省略）→ Secret → 地区
+// 密钥类的项（Secret、API key）用密码框，输入时不显示。
+const trim = (v) => String(v ?? "").trim()
+const isAutoType = (i) => trim(i?.type) === "auto"
+const hasAccessKey = (i) => Boolean(trim(i?.ak))
+const noSpace = (what) => (v) => (/\s/.test(trim(v)) ? `${what}里不能有空格` : undefined)
+const required = (what) => (v) => (trim(v) ? undefined : `${what}不能为空`)
+const both = (...fns) => (v) => fns.map((f) => f(v)).find(Boolean)
+
+const LOGIN_PROMPTS = [
+  // 选"自动识别"只要填 AccessKey，套餐类型、API key、地址、到期、额度全自动；
+  // 选 plan / coding 就不用写地址（但要自己填 API key）；选"自定义"才问 Base URL。
+  {
+    type: "select",
+    key: "type",
+    message: "订阅类型",
+    options: [
+      { label: "自动识别", value: "auto", hint: "只填 AccessKey：套餐类型、API key、地址、到期、额度全自动" },
+      { label: "plan", value: "plan", hint: ENDPOINTS.plan },
+      { label: "coding", value: "coding", hint: ENDPOINTS.coding },
+      { label: "自定义地址", value: "custom", hint: "再填一个 Base URL" },
+    ],
+  },
+  {
+    type: "text",
+    key: "baseURL",
+    message: "Base URL（https://…，不带 /v1）",
+    placeholder: ENDPOINTS.plan,
+    condition: (i) => trim(i?.type) === "custom",
+    validate: (v) => (/^https?:\/\/\S+$/.test(trim(v)) ? undefined : "要以 http:// 或 https:// 开头"),
+  },
+  {
+    type: "text",
+    key: "name",
+    message: "账号名称（可省略；同名再次添加会替换旧账号）",
+    placeholder: "主力",
+    validate: (v) => (/[\s,，|]/.test(trim(v)) ? "名称里不能有空格、逗号或竖线" : undefined),
+  },
+  // 自动识别：AccessKey 必填
+  {
+    type: "text",
+    key: "akAuto",
+    message: "AccessKey ID（火山控制台 → 访问控制 → 访问密钥）",
+    placeholder: "AKLT…",
+    condition: isAutoType,
+    validate: both(required("AccessKey ID"), noSpace("AccessKey ID")),
+  },
+  {
+    type: "password",
+    key: "skAuto",
+    message: "Secret AccessKey",
+    condition: isAutoType,
+    validate: both(required("Secret"), noSpace("Secret")),
+  },
+  // 手填 API key：AccessKey 可省略（填了就能读真实额度和到期）
+  {
+    type: "password",
+    key: "apiKey",
+    message: "Ark API key（ark- 开头，聊天用）",
+    placeholder: "ark-…",
+    condition: (i) => !isAutoType(i),
+    validate: both(required("API key"), noSpace("API key")),
+  },
+  {
+    type: "text",
+    key: "expires",
+    message: "订阅到期日 YYYY-MM-DD（可省略；填了 AccessKey 会自动读取，不用填）",
+    placeholder: "2027-01-06",
+    condition: (i) => !isAutoType(i),
+    validate: (v) => (trim(v) && !parseExpiry(v) ? "日期格式是 YYYY-MM-DD" : undefined),
+  },
+  {
+    type: "text",
+    key: "ak",
+    message: "AccessKey ID（可省略；填了才能读真实额度和到期）",
+    placeholder: "AKLT…",
+    condition: (i) => !isAutoType(i),
+    validate: noSpace("AccessKey ID"),
+  },
+  {
+    type: "password",
+    key: "sk",
+    message: "Secret AccessKey",
+    condition: (i) => !isAutoType(i) && hasAccessKey(i),
+    validate: both(required("Secret"), noSpace("Secret")),
+  },
+  {
+    type: "text",
+    key: "region",
+    message: `地区（可省略，默认 ${DEFAULT_REGION}）`,
+    placeholder: DEFAULT_REGION,
+    condition: (i) => Boolean(trim(i?.akAuto) || trim(i?.ak)),
+    validate: noSpace("地区"),
+  },
+]
+
+// 把分项输入整理成和 parseAccountLine 一样的结构。
+function fromFields(inputs) {
+  const type = trim(inputs?.type)
+  const auto = type === "auto"
+  const ak = auto ? trim(inputs?.akAuto) : trim(inputs?.ak)
+  const sk = auto ? trim(inputs?.skAuto) : trim(inputs?.sk)
+  if (Boolean(ak) !== Boolean(sk)) return { error: "AccessKey ID 和 Secret 要一起填" }
+  const name = trim(inputs?.name)
+  if (/[\s,，|]/.test(name)) return { error: "名称里不能有空格、逗号或竖线" }
+  const key = auto ? "" : trim(inputs?.apiKey)
+  let expiresAt = ""
+  if (!auto && trim(inputs?.expires)) {
+    expiresAt = parseExpiry(inputs.expires)
+    if (!expiresAt) return { error: `到期日 ${trim(inputs.expires)} 不是有效日期，格式是 YYYY-MM-DD` }
+  }
+  if (!auto && !key) return { error: "缺少 API key（不想填 key 的话，订阅类型请选「自动识别」并填 AccessKey）" }
+  return {
+    name,
+    baseURL: type === "custom" ? normalizeBase(inputs?.baseURL) : "",
+    key,
+    expiresAt,
+    ak,
+    sk,
+    region: trim(inputs?.region),
+    auto: Boolean(ak && sk) && !key,
+  }
+}
+
 export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
   const base = options.baseURL ?? DEFAULT_BASE
   const models = options.models ?? DEFAULT_MODELS
@@ -333,44 +460,20 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
 
     auth: {
       provider: PROVIDER,
-      // 添加账号只问一次（magpie 界面会把多个 prompts 拆成"下一步"），所以三项写在一个输入框里，空格分隔：
-      //   名称 Base URL API key        例：主力 https://ark.cn-beijing.volces.com/api/plan/v1 ark-xxxx
-      //   名称 API key                 Base URL 用默认地址
-      //   API key                      只有 key
-      // 名称和 Base URL 每个账号各自一份，存在账号 metadata 里。名称同时作 accountId：
-      // magpie 用它给账号命名，重名的登录会替换旧账号。
+      // 添加账号分项输入（见上面的 LOGIN_PROMPTS）。名称和 Base URL 每个账号各自一份，存在账号 metadata 里。
+      // 名称同时作 accountId：magpie 用它给账号命名，重名的登录会替换旧账号。
+      // authorize 也认单个 inputs.account（"名称 key 到期日 ak=… sk=…" 一行写完），给脚本和测试用，界面上不出现。
       methods: [
         {
           type: "api",
           label: "火山方舟账号",
-          prompts: [
-            // 订阅类型下拉：选"自动识别"只要写 ak/sk，套餐类型、API key、地址全自动；
-            // 选 plan / coding 就不用写地址（但要自己填 API key）；选"自定义"才在下一行里写 Base URL。
-            {
-              type: "select",
-              key: "type",
-              message: "订阅类型",
-              options: [
-                { label: "自动识别", value: "auto", hint: "只填 ak/sk：套餐类型、API key、地址、到期、额度全自动" },
-                { label: "plan", value: "plan", hint: ENDPOINTS.plan },
-                { label: "coding", value: "coding", hint: ENDPOINTS.coding },
-                { label: "自定义地址", value: "custom", hint: "在下一行里写 Base URL" },
-              ],
-            },
-            {
-              type: "text",
-              key: "account",
-              message: "自动识别：名称 ak=… sk=…；手填 key：名称 API key 到期日 ak=… sk=…（空格分隔，名称、到期日都可省略；选了自定义地址时还要写 Base URL）",
-              placeholder: "主力 ak=AKLT… sk=…",
-              validate: (v) => parseAccountLine(v).error,
-            },
-          ],
+          prompts: LOGIN_PROMPTS,
           async authorize(inputs) {
-            const r = parseAccountLine(inputs?.account)
+            const r = inputs?.account ? parseAccountLine(inputs.account) : fromFields(inputs)
             if (r.error) return { type: "failed", error: r.error }
             const type = String(inputs?.type ?? "")
-            if (type === "auto" && !r.ak) return { type: "failed", error: "自动识别要在这一行里写 ak=… sk=…（火山账号的 AccessKey ID 和 Secret）" }
-            if (type === "auto" && r.key) return { type: "failed", error: "自动识别不用填 API key（插件用 AK/SK 自己去取）；要手填 API key 请选 plan / coding" }
+            if (type === "auto" && !r.ak) return { type: "failed", error: "自动识别要填 AccessKey ID 和 Secret（火山控制台 → 访问控制 → 访问密钥）" }
+            if (type === "auto" && r.key) return { type: "failed", error: "自动识别不用填 API key（插件用 AccessKey 自己去取）；要手填 API key 请选 plan / coding" }
             // 自动识别：存 AccessKey ID 当"key"（它不是机密，也让同一个 AK 再次添加时替换旧账号）。
             // 聊天用的 API key 不存盘，运行时由控制面取。套餐类型和地址也是运行时识别的，所以不存 baseURL。
             if (r.auto) {
@@ -389,7 +492,7 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
               }
             }
             // 地址来源：这一行里写了的最优先；否则按下拉选的类型；没选就不存，用默认地址。
-            if (type === "custom" && !r.baseURL) return { type: "failed", error: "选了自定义地址，请在这一行里写上 Base URL（http:// 或 https:// 开头）" }
+            if (type === "custom" && !r.baseURL) return { type: "failed", error: "选了自定义地址，请填写 Base URL（http:// 或 https:// 开头）" }
             r.baseURL = r.baseURL || ENDPOINTS[type] || ""
             // accountId 就是卡片的大标题：magpie 在登录这一刻把它记成账号的显示名，之后不会变。
             // 同名再次登录会按 accountId 替换旧账号。不写 metadata.email、usage 也不返回 user：
@@ -598,4 +701,4 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
 }
 
 // 不要从入口导出辅助函数（每个导出的函数都会被当成插件调用），测试要用的放在对象上。
-export const _internal = { discover, discoveryCache, discoveryInflight, looksLikeKey, rewriteBase, quotaFor, quotaCache, autoSubscription, expiryOf, parseError, parseResetTime, windowFor, windowKind, windowInfo, suspendedUntil, normalizeBase, parseAccountLine, parseExpiry, beijingDate, apiBase, ENDPOINTS, QUOTA_CODE, PERMANENT_CODES }
+export const _internal = { LOGIN_PROMPTS, fromFields, discover, discoveryCache, discoveryInflight, looksLikeKey, rewriteBase, quotaFor, quotaCache, autoSubscription, expiryOf, parseError, parseResetTime, windowFor, windowKind, windowInfo, suspendedUntil, normalizeBase, parseAccountLine, parseExpiry, beijingDate, apiBase, ENDPOINTS, QUOTA_CODE, PERMANENT_CODES }

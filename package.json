@@ -12,7 +12,7 @@
     "url": "git+https://github.com/DokiDoki1103/magpie-volcengine-plan.git"
   },
   "scripts": {
-    "test": "node test/plugin.test.mjs && node test/quota.test.mjs && node test/discover.test.mjs"
+    "test": "node test/plugin.test.mjs && node test/quota.test.mjs && node test/discover.test.mjs && node test/scripts.test.mjs"
   },
   "magpie": {
     "name": "火山方舟订阅",

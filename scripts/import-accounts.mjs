@@ -16,11 +16,13 @@
 //   --provider volcengine-plan
 // 环境变量：KUBECONFIG 照常生效；KUBECTL 可指定 kubectl 的路径（默认 kubectl）。
 //
-// 每个账号等价于在 magpie 里手动做：登录 -> 下拉选 plan/coding -> 粘贴「名称 key 到期日」。
+// 每个账号等价于在 magpie 里手动做：登录 -> 下拉选 plan/coding -> 依次填 名称、API key、到期日，AccessKey 留空。
+// 这些项是按行灌进 `magpie plugin login` 的标准输入的，顺序必须和插件的登录提示一致（见 accounts-from-gateway.mjs）。
+// 插件或 magpie 改了提示顺序后，先用 --only 导一个确认，再全量。
 
 import { readFileSync } from "node:fs"
 import { spawnSync } from "node:child_process"
-import { extractAccounts, accountLine } from "./accounts-from-gateway.mjs"
+import { extractAccounts, accountLine, loginAnswers } from "./accounts-from-gateway.mjs"
 
 const args = process.argv.slice(2)
 const flag = (n) => args.includes(n)
@@ -38,7 +40,6 @@ const only = opt("--only", "")
 const deploy = opt("--deploy", "deploy/magpie")
 const provider = opt("--provider", "volcengine-plan")
 const kubectl = process.env.KUBECTL || "kubectl"
-const SELECT = { plan: 1, coding: 2 } // 登录第一步下拉的编号
 
 function readInput() {
   if (file) return readFileSync(file, "utf8")
@@ -86,7 +87,7 @@ if (!yes) {
 let ok = 0
 let bad = 0
 for (const a of todo) {
-  const input = `${SELECT[a.kind]}\n${accountLine(a)}\n`
+  const input = loginAnswers(a).join("\n") + "\n"
   const r = spawnSync(kubectl, ["exec", "-i", deploy, "--", "/magpie", "plugin", "login", provider], {
     input,
     encoding: "utf8",
