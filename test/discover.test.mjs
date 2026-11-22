@@ -379,5 +379,40 @@ for (const [name, r, signIn] of [
   ok(u.signIn === signIn && u.error.includes("火山自动识别失败") && u.windows.length === 0, `usage 自动识别失败（${name}）：${signIn === "expired" ? "标记需要重新登录" : "只显示原因"}`)
 }
 
+// ---- 10) 卡片标题：usage 的 user 就是登录时填的名称（所有状态都要带上）----
+// magpie 取插件账号的显示名：用户自己起的 → usage 里的 user → 账号 id；插件账号保存时没有 accountId，
+// 不返回 user 就会显示成 "API key …尾号"，用户还得手动再起一次名。
+reset(usageReplies())
+{
+  const u = await plugin.auth.usage(async () => autoAuth({ accessKeyID: "AKLTname1", name: "韩茗宇18630818119" }))
+  ok(u.user === "韩茗宇18630818119", "标题：正常状态，usage.user 是登录时填的名称")
+  const noName = await plugin.auth.usage(async () => autoAuth({ accessKeyID: "AKLTname2", name: "" }))
+  ok(noName.user === undefined && !("user" in noName), "标题：没填名称就不带 user，用 magpie 默认的")
+  const blank = await plugin.auth.usage(async () => autoAuth({ accessKeyID: "AKLTname3", name: "   " }))
+  ok(!("user" in blank), "标题：名称只有空白当作没填")
+}
+reset({ GetPersonalPlan: err("InvalidAccessKey") })
+{
+  const u = await plugin.auth.usage(async () => autoAuth({ accessKeyID: "AKLTname4", name: "张晓源" }))
+  ok(u.user === "张晓源" && u.signIn === "expired", "标题：识别失败（凭据错）时名称也还在，标题不会变回 API key …尾号")
+}
+reset({ ...usageReplies(), GetPersonalPlan: (h, b) => (b.Plan === "AgentPlan" ? okr({ PlanType: "Medium", Status: "Running", EndTime: "2026-01-01T00:00:00Z", AutoRenew: false }) : NO_PLAN) })
+{
+  const u = await plugin.auth.usage(async () => autoAuth({ accessKeyID: "AKLTname5", name: "已到期的" }))
+  ok(u.user === "已到期的" && u.signIn === "expired", "标题：订阅已到期时名称也还在")
+}
+reset({ ...usageReplies(), GetAFPUsage: err("InternalError", "boom") })
+{
+  const u = await plugin.auth.usage(async () => autoAuth({ accessKeyID: "AKLTname6", name: "额度读失败" }))
+  ok(u.user === "额度读失败" && u.signIn === "kept" && u.error, "标题：额度读取出错时名称也还在")
+}
+reset({})
+{
+  // 手填 key 的账号（没有 AccessKey）同样带名称
+  const a = { type: "api", key: "ark-manual", metadata: { name: "手填的", baseURL: "https://ark.cn-beijing.volces.com/api/plan" } }
+  const u = await plugin.auth.usage(async () => a)
+  ok(u.user === "手填的", "标题：手填 key 的账号同样用登录时的名称")
+}
+
 console.log(failed ? `\n${failed} 项失败` : "\n全部通过")
 process.exit(failed ? 1 : 0)

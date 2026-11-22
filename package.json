@@ -1,6 +1,6 @@
 {
   "name": "magpie-volcengine-plan",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "magpie 供应商插件：火山方舟订阅（Agent Plan / Coding Plan，Anthropic 协议）。只填 AccessKey 就能自动识别套餐、取 API key、读额度和到期；429 额度用尽自动暂停到恢复时间。",
   "type": "module",
   "main": "./index.mjs",

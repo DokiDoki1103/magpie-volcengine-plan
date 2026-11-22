@@ -646,13 +646,18 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
         // 凭据不对 / 没订阅 => 标成需要重新登录；其他（没 key、被拒绝、临时故障）只显示原因。
         const isAuto = auth?.metadata?.mode === "auto"
         let md = auth?.metadata ?? {}
+        // 账号的名字：登录时填的名称。magpie 给插件账号取显示名的顺序是 用户自己起的名 → 插件在 usage 里给的 user → 账号 id；
+        // 插件账号保存时不带 accountId，所以不返回 user 就会退回 "API key …尾号"，用户还得手动"给此账号起名"。
+        // 所有分支都要带上，识别失败、已到期时标题也不该变。
+        const user = String(md.name ?? "").trim()
+        const named = user ? { user } : {}
         if (isAuto) {
           try {
             const f = await discover(md, { signal: ctx?.signal })
             md = { ...md, baseURL: f.root }
             if (f.subscription) autoSubscription.set(auth.key, f.subscription)
           } catch (e) {
-            return { plan: "火山方舟订阅", error: discoveryMessage(e), signIn: discoveryFailure(e).signIn ? "expired" : "kept", windows: [] }
+            return { plan: "火山方舟订阅", ...named, error: discoveryMessage(e), signIn: discoveryFailure(e).signIn ? "expired" : "kept", windows: [] }
           }
         }
         // magpie 的账号卡片没有 Base URL 这一项，借一个只带 display 的窗口把它显示出来。
@@ -674,11 +679,11 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
         const until2 = ex.endsAt ? { until: new Date(ex.endsAt).toISOString() } : {}
         const renew = ex.source !== "manual" ? { renew: ex.autoRenew ? "auto" : "off" } : {}
         if (expired) {
-          return { plan, ...until2, ...renew, error: expiredMessage(ex.endsAt, ex.status), signIn: "expired", windows: [baseWindow] }
+          return { plan, ...named, ...until2, ...renew, error: expiredMessage(ex.endsAt, ex.status), signIn: "expired", windows: [baseWindow] }
         }
         let windows = q?.ok ? q.ok.windows.map((w) => ({ ...w })) : []
         const planLabel = q?.ok ? q.ok.plan : plan
-        // 名称已经是卡片标题（登录时的 accountId），这里不再重复显示。
+        // 名称就是卡片标题（上面的 user），窗口里不再重复显示。
         if (until > now) {
           const w = windowInfo(auth.metadata?.suspendWindow, until - now)
           const at = windows.findIndex((x) => x.name === w.name)
@@ -690,6 +695,7 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
         }
         return {
           plan: planLabel,
+          ...named,
           ...until2,
           ...renew,
           ...(q?.error ? { error: q.error, signIn: "kept" } : {}),
