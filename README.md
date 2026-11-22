@@ -124,7 +124,9 @@ AccessKey 能读到账号的聊天 API key，所以**它比 API key 更敏感**�
 - `GetCodingPlanUsage`：没有 coding 套餐的账号返回 `{"Status":"Reclaimed"}` 而不是窗口，插件把它当作订阅已结束。
 - **自动识别（个人版 Agent Plan）整条链路已端到端验证**：`GetPersonalPlan`（Agent 有数据、Coding 返回 `ResourceNotFound.Plan`）→ `ListApiKeys`（`Filter.Scene="RealAgentPlanPersonal"`，列表里的 `Key` 是打码的）→ `GetRawApiKey({Id})` 取回 46 位 `ark-…` 明文 → 用它发聊天请求，认证通过。另外验证了：普通账号级 key 池里的 36 位 key 打 `/api/plan` 会 401 `API key format is incorrect`，所以必须走专属池。
 
-**还没有在真实账号上验证的**：有有效订阅的 Coding Plan（`QuotaUsage` 的真实形状，以及 Coding 个人版用普通 key 池取 key 这一步）、团队版席位（`GetAgentPlanSeatAFPUsage`、席位的 `ExpiredTime` 和 `GetSeatInfo.ApiKey`）、`AutoRenew: true` 的账号。这几条按火山官方 `ark-cli` 文档和社区工具的代码实现。你有这类账号的话，用下面的探测脚本跑一遍，把结果（扫过敏感信息）发 issue，我来核对。
+- **自动识别（个人版 Coding Plan）也在真实账号上跑通**（2026-11-22，用另一个账号在 magpie 里添加，只填 AccessKey）：识别为 Coding Plan、地址 `/api/coding`、`GetCodingPlanUsage` 返回 5 小时 / 周 / 月三个窗口（`QuotaUsage` 的 `Level` 为 `session` / `weekly` / `monthly`）、`GetPersonalPlan` 读到到期日。
+
+**还没有在真实账号上验证的**：Coding 个人版用普通 key 池取回的 key 能否真的用于聊天（识别和取 key 这一步成功了，但没有发过聊天请求去核对认证）、团队版席位（`GetAgentPlanSeatAFPUsage`、席位的 `ExpiredTime` 和 `GetSeatInfo.ApiKey`）、`AutoRenew: true` 的账号。这几条按火山官方 `ark-cli` 文档和社区工具的代码实现。你有这类账号的话，用下面的探测脚本跑一遍，把结果（扫过敏感信息）发 issue，我来核对。
 
 用探测脚本看一眼真实返回（AK/SK 走环境变量，不要写在命令行里）：
 
