@@ -1,6 +1,6 @@
 {
   "name": "magpie-volcengine-plan",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "magpie 供应商插件：火山方舟订阅（Agent Plan / Coding Plan，Anthropic 协议）。只填 AccessKey 就能自动识别套餐、取 API key、读额度和到期；429 额度用尽自动暂停到恢复时间。",
   "type": "module",
   "main": "./index.mjs",
@@ -12,10 +12,11 @@
     "url": "git+https://github.com/DokiDoki1103/magpie-volcengine-plan.git"
   },
   "scripts": {
-    "test": "node test/plugin.test.mjs && node test/quota.test.mjs && node test/discover.test.mjs && node test/scripts.test.mjs"
+    "test": "node test/plugin.test.mjs && node test/quota.test.mjs && node test/discover.test.mjs && node test/scripts.test.mjs && node test/package.test.mjs"
   },
   "magpie": {
     "name": "火山方舟订阅",
+    "icon": "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiBzaGFwZS1yZW5kZXJpbmc9Imdlb21ldHJpY1ByZWNpc2lvbiI+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMC4zNDkgMTIuODU3KSI+PHBhdGggZD0iTTAgOS4xNTg0SDYuMzQ0MDRMMy40NzE4IDAuMjIxNDYzQzMuNDE5NTEgMC4wNTMzNzA0IDMuMjM4MjUgLTAuMDM3Njc5OSAzLjA3MDk0IDAuMDE0ODQ5MUMyLjk3MzMzIDAuMDQ2MzY2NSAyLjg5NjY1IDAuMTIzNDA5IDIuODY1MjggMC4yMjE0NjNMMCA5LjE1ODRaIiBmaWxsPSIjMDBEQ0ZGIi8+PC9nPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDE1Ljc3MSAxMS4yNzcpIj48cGF0aCBkPSJNMCAxMC43NDgzSDcuMzYxODhMMy45ODQyIDAuMjIxNDYzQzMuOTMxOTEgMC4wNTMzNzA0IDMuNzUwNjUgLTAuMDM3NjggMy41ODMzNCAwLjAxNDg0OTFDMy40ODU3NCAwLjA0NjM2NjUgMy40MDkwNSAwLjEyMzQwOSAzLjM3NzY4IDAuMjIxNDYzTDAgMTAuNzQ4M1oiIGZpbGw9IiMwMERDRkYiLz48L2c+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoNy4wMTIgMS43MTYpIj48cGF0aCBkPSJNMCAyMC4zMTAySDEzLjU4MDRMNy4wOTM0OCAwLjIxOTY0MUM3LjAzNzcxIDAuMDUxNTQ4NSA2Ljg1OTkzIC0wLjAzOTUwMTggNi42OTI2MiAwLjAxNjUyOTFDNi41OTUwMiAwLjA0ODA0NjUgNi41MTgzMyAwLjEyNTA4OSA2LjQ4Njk2IDAuMjE5NjQxTDAgMjAuMzEwMloiIGZpbGw9IiMwMDZBRkYiLz48L2c+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMi44ODIgNi44MTUpIj48cGF0aCBkPSJNMC4wMDM0ODU0OSAxNS4yMTE0SDEwLjI4MjlMNS40NDQ3MiAwLjIxOTY0MUM1LjM4ODk1IDAuMDUxNTQ4MiA1LjIxMTE4IC0wLjAzOTUwMTggNS4wNDM4NiAwLjAxNjUyOTJDNC45NDYyNiAwLjA0ODA0NjYgNC44Njk1OCAwLjEyNTA4OSA0LjgzODIxIDAuMjE5NjQxTDAgMTUuMjExNEgwLjAwMzQ4NTQ5WiIgZmlsbD0iIzAwNkFGRiIvPjwvZz48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSg1LjczNiA5LjM1NSkiPjxwYXRoIGQ9Ik0wIDEyLjY3MjVIOC42OTM0M0w0LjY0OTk4IDAuMjE5NjQxQzQuNTk0MiAwLjA1MTU0ODUgNC40MTY0MyAtMC4wMzk1MDE4IDQuMjQ5MTIgMC4wMTY1MjkxQzQuMTUxNTIgMC4wNDgwNDY1IDQuMDc4MzIgMC4xMjUwODkgNC4wNDY5NCAwLjIxOTY0MUwwLjAwMzQ4NTgyIDEyLjY3MjVIMFoiIGZpbGw9IiMwMERDRkYiLz48L2c+PC9zdmc+Cg==",
     "maxConcurrency": 4,
     "summary": {
       "en": "Volcengine Ark plan (Agent/Coding) over the Anthropic API. Give it just an AccessKey: it finds the plan, API key, quota and expiry. Pauses an account on quota 429 until reset.",
