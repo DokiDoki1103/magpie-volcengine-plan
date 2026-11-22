@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+# 从 ai-gateway 导出的账号清单里有明文 key，别提交
+keys*.json
+*.keys.json
