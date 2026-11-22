@@ -15,7 +15,73 @@
 //   { "baseURL": "https://ark.cn-beijing.volces.com/api/plan",
 //     "models": { "ark-code-latest": { "name": "Ark Code Latest" } } }
 
-import { endedNow, fetchUsage, planOf, regionOf } from "./quota.mjs"
+import { DEFAULT_REGION, endedNow, fetchUsage, planOf, regionOf } from "./quota.mjs"
+import { discoverAccount } from "./discover.mjs"
+
+// 自动识别账号（登录时只填了 ak/sk，metadata.mode === "auto"）：套餐类型、聊天用的 API key、Base URL 都由控制面查出来。
+// 识别结果按 AK 缓存 30 分钟；明文 API key 只存在这个内存缓存里，不写盘。
+// 请求被 401 拒绝（key 被轮换）时强制重新识别一次再重试，所以换 key 不用管。
+const DISCOVERY_TTL = 30 * 60 * 1000
+const discoveryCache = new Map() // `${ak}|${region}` -> { value, at }
+const discoveryInflight = new Map() // 同一个账号同时多个请求，只识别一次
+async function discover(md, { force = false, signal } = {}) {
+  const ak = String(md?.accessKeyID ?? "").trim()
+  const sk = String(md?.secretAccessKey ?? "").trim()
+  const region = String(md?.region ?? "").trim() || DEFAULT_REGION
+  const id = `${ak}|${region}`
+  const hit = discoveryCache.get(id)
+  if (!force && hit && Date.now() - hit.at < DISCOVERY_TTL) return hit.value
+  let p = discoveryInflight.get(id)
+  if (!p) {
+    p = discoverAccount({ ak, sk, region, signal })
+      .then((value) => {
+        discoveryCache.set(id, { value, at: Date.now() })
+        return value
+      })
+      .catch((e) => {
+        // 刷新失败：除了凭据错误，沿用旧结果，1 分钟后再试，不因为一次网络抖动就让账号掉线
+        if (hit && e?.kind !== "credential") {
+          discoveryCache.set(id, { value: hit.value, at: Date.now() - DISCOVERY_TTL + 60 * 1000 })
+          return hit.value
+        }
+        throw e
+      })
+      .finally(() => discoveryInflight.delete(id))
+    discoveryInflight.set(id, p)
+  }
+  return p
+}
+
+// 识别失败时给 magpie 的回应：凭据不对 / 没套餐要重新登录（带 x-magpie-sign-in），其他的只是失败，magpie 会切号。
+const DISCOVERY_FAILURE = {
+  credential: { status: 401, type: "authentication_error", signIn: true, label: "AccessKey 不对或没有权限" },
+  "no-plan": { status: 403, type: "permission_error", signIn: true, label: "没有识别到订阅" },
+  "no-key": { status: 403, type: "permission_error", signIn: false, label: "没有可用的 API key" },
+  gate: { status: 403, type: "permission_error", signIn: false, label: "读取 API key 被拒绝" },
+  transient: { status: 503, type: "api_error", signIn: false, label: "临时故障，稍后重试" },
+}
+const discoveryFailure = (e) => DISCOVERY_FAILURE[e?.kind] ?? DISCOVERY_FAILURE.transient
+const discoveryMessage = (e) => `火山自动识别失败（${discoveryFailure(e).label}）：${e?.message ?? e}`
+function discoveryFailureResponse(e) {
+  const f = discoveryFailure(e)
+  const body = { type: "error", error: { type: f.type, code: "DiscoveryFailed", message: discoveryMessage(e) } }
+  const headers = { "content-type": "application/json", ...(f.signIn ? { "x-magpie-sign-in": "expired" } : {}) }
+  return new Response(JSON.stringify(body), { status: f.status, headers })
+}
+
+// loader 返回的基地址和识别出来的不一样时（loader 加载时识别失败，用了默认地址），请求时把前缀换掉。
+function rewriteBase(input, from, to) {
+  if (from === to) return input
+  const s = typeof input === "string" ? input : input instanceof URL ? input.href : undefined
+  return s && s.startsWith(from) ? to + s.slice(from.length) : input
+}
+// 请求体能不能重发（401 后换 key 重试一次要用）
+const replayable = (body) => body === undefined || body === null || typeof body === "string" || body instanceof Uint8Array || body instanceof ArrayBuffer
+
+// 看起来像 Ark API key：ark- 开头、UUID、或 32 位以上的字母数字串。
+// 有 ak/sk 时，行里只剩一项：像 key 就是 key（手填 key + 查额度），否则是名称（自动识别）。
+const looksLikeKey = (t) =>
+  /^ark-/i.test(t) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t) || /^[A-Za-z0-9_-]{32,}$/.test(t)
 
 // 套餐到期的来源有两个：
 //   1) 账号填了 AK/SK：usage 从控制面读到的真实到期时间（autoSubscription，按 API key 存在内存里）；
@@ -149,10 +215,20 @@ function parseAccountLine(line) {
     if (!expiresAt) return { error: `到期日 ${dates[0]} 不是有效日期，格式是 YYYY-MM-DD` }
   }
   const rest = parts.filter((p) => !/^https?:\/\//i.test(p) && !DATE_RE.test(p))
-  if (rest.length === 0) return { error: "缺少 API key" }
+  const hasCreds = Boolean(kv.ak && kv.sk)
+  let key = ""
+  let name = ""
   if (rest.length > 2) return { error: "多了一项：名称不能带空格；格式是 名称 API key 到期日 ak=… sk=…" }
-  const key = rest[rest.length - 1]
-  const name = rest.length === 2 ? rest[0] : ""
+  if (rest.length === 2) {
+    name = rest[0]
+    key = rest[1]
+  } else if (rest.length === 1) {
+    // 有 ak/sk 时，只剩的这一项像 API key 就是 key，否则是名称（自动识别，不用填 key）
+    if (hasCreds && !looksLikeKey(rest[0])) name = rest[0]
+    else key = rest[0]
+  } else if (!hasCreds) {
+    return { error: "缺少 API key（只填 ak= sk= 想让插件自动识别的话，订阅类型请选「自动识别」）" }
+  }
   return {
     name,
     baseURL: urls.length ? normalizeBase(urls[0]) : "",
@@ -161,6 +237,7 @@ function parseAccountLine(line) {
     ak: kv.ak ?? "",
     sk: kv.sk ?? "",
     region: kv.region ?? "",
+    auto: hasCreds && !key, // 没有 API key、只有 ak/sk：自动识别
   }
 }
 
@@ -267,12 +344,14 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
           type: "api",
           label: "火山方舟账号",
           prompts: [
-            // 订阅类型下拉：选 plan / coding 就不用写地址；选"自定义"才在下一行里写 Base URL。
+            // 订阅类型下拉：选"自动识别"只要写 ak/sk，套餐类型、API key、地址全自动；
+            // 选 plan / coding 就不用写地址（但要自己填 API key）；选"自定义"才在下一行里写 Base URL。
             {
               type: "select",
               key: "type",
               message: "订阅类型",
               options: [
+                { label: "自动识别", value: "auto", hint: "只填 ak/sk：套餐类型、API key、地址、到期、额度全自动" },
                 { label: "plan", value: "plan", hint: ENDPOINTS.plan },
                 { label: "coding", value: "coding", hint: ENDPOINTS.coding },
                 { label: "自定义地址", value: "custom", hint: "在下一行里写 Base URL" },
@@ -281,16 +360,35 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
             {
               type: "text",
               key: "account",
-              message: "名称 API key 到期日 ak=… sk=…（空格分隔，除 key 外都可省略；ak/sk 用来查真实额度；选了自定义地址时还要写 Base URL）",
-              placeholder: "主力 ark-… 2026-12-31 ak=AKLT… sk=…",
+              message: "自动识别：名称 ak=… sk=…；手填 key：名称 API key 到期日 ak=… sk=…（空格分隔，名称、到期日都可省略；选了自定义地址时还要写 Base URL）",
+              placeholder: "主力 ak=AKLT… sk=…",
               validate: (v) => parseAccountLine(v).error,
             },
           ],
           async authorize(inputs) {
             const r = parseAccountLine(inputs?.account)
             if (r.error) return { type: "failed", error: r.error }
-            // 地址来源：这一行里写了的最优先；否则按下拉选的类型；没选就不存，用默认地址。
             const type = String(inputs?.type ?? "")
+            if (type === "auto" && !r.ak) return { type: "failed", error: "自动识别要在这一行里写 ak=… sk=…（火山账号的 AccessKey ID 和 Secret）" }
+            if (type === "auto" && r.key) return { type: "failed", error: "自动识别不用填 API key（插件用 AK/SK 自己去取）；要手填 API key 请选 plan / coding" }
+            // 自动识别：存 AccessKey ID 当"key"（它不是机密，也让同一个 AK 再次添加时替换旧账号）。
+            // 聊天用的 API key 不存盘，运行时由控制面取。套餐类型和地址也是运行时识别的，所以不存 baseURL。
+            if (r.auto) {
+              return {
+                type: "success",
+                key: r.ak,
+                accountId: r.name || undefined,
+                metadata: {
+                  name: r.name,
+                  mode: "auto",
+                  accessKeyID: r.ak,
+                  secretAccessKey: r.sk,
+                  ...(r.region ? { region: r.region } : {}),
+                  ...(r.expiresAt ? { expiresAt: r.expiresAt } : {}), // 兜底：控制面读不到到期时间时用
+                },
+              }
+            }
+            // 地址来源：这一行里写了的最优先；否则按下拉选的类型；没选就不存，用默认地址。
             if (type === "custom" && !r.baseURL) return { type: "failed", error: "选了自定义地址，请在这一行里写上 Base URL（http:// 或 https:// 开头）" }
             r.baseURL = r.baseURL || ENDPOINTS[type] || ""
             // accountId 就是卡片的大标题：magpie 在登录这一刻把它记成账号的显示名，之后不会变。
@@ -330,8 +428,26 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
           }
         }
 
+        // 自动识别的账号：套餐类型、API key、地址都由控制面查出来（见 discover.mjs）。
+        // 加载时识别不了也要让账号出现在列表里，请求时再试，并给出具体原因。
+        const auto = auth.metadata?.mode === "auto"
+        let found
+        const ensure = async (opts) => {
+          found = await discover(auth.metadata, opts)
+          if (found?.subscription) autoSubscription.set(auth.key, found.subscription)
+          return found
+        }
+        if (auto) {
+          try {
+            await ensure()
+          } catch {
+            // 请求时再试
+          }
+        }
+
         // 每个账号可以有自己的 Base URL；没填的（包括之前添加的账号）用默认地址
-        const accountBase = normalizeBase(auth.metadata?.baseURL) || base
+        const accountBase = auto ? found?.root || base : normalizeBase(auth.metadata?.baseURL) || base
+        const loaderApi = apiBase(accountBase)
 
         const suspend = async (resetAt, raw, kind) => {
           until = resetAt
@@ -354,8 +470,19 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
         }
 
         return {
-          baseURL: apiBase(accountBase),
+          baseURL: loaderApi,
           async fetch(input, init) {
+            // 聊天用的 API key：手填的账号是保存的 key；自动识别的账号是控制面取来的（只在内存里）。
+            let apiKey = auth.key
+            if (auto) {
+              try {
+                await ensure()
+              } catch (e) {
+                return discoveryFailureResponse(e)
+              }
+              apiKey = found.key
+              input = rewriteBase(input, loaderApi, apiBase(found.root))
+            }
             // 订阅已到期：不打上游，回 403 并标记需要重新登录，magpie 会切到别的账号。
             // 到期时间每次请求现取（真实值可能在 usage 里更新），续费后读到新的到期时间就自动恢复。
             const ex = expiryOf(auth)
@@ -363,10 +490,22 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
             // 暂停期内不打上游，直接回 429 让 magpie 切号
             if (until > Date.now()) return quotaResponse(until)
 
-            const headers = new Headers(init?.headers)
-            headers.set("x-api-key", auth.key)
-            headers.set("authorization", `Bearer ${auth.key}`)
-            const res = await fetch(input, { ...init, headers })
+            const send = (k) => {
+              const headers = new Headers(init?.headers)
+              headers.set("x-api-key", k)
+              headers.set("authorization", `Bearer ${k}`)
+              return fetch(input, { ...init, headers })
+            }
+            let res = await send(apiKey)
+            // 自动识别的账号被 401 拒绝：key 可能被轮换了。强制重新取一次，换了就重试一次。
+            if (auto && res.status === 401 && replayable(init?.body)) {
+              try {
+                const again = await ensure({ force: true })
+                if (again.key !== apiKey) res = await send(again.key)
+              } catch {
+                // 刷新失败就把原来的 401 交给 magpie
+              }
+            }
 
             if (res.status === 429) {
               const text = await res.clone().text()
@@ -400,16 +539,29 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
         const auth = await getAuth()
         const until = suspendedUntil(auth)
         const now = Date.now()
+        // 自动识别的账号：先识别，拿到套餐类型和地址再查额度。识别不了就直接说明原因：
+        // 凭据不对 / 没订阅 => 标成需要重新登录；其他（没 key、被拒绝、临时故障）只显示原因。
+        const isAuto = auth?.metadata?.mode === "auto"
+        let md = auth?.metadata ?? {}
+        if (isAuto) {
+          try {
+            const f = await discover(md, { signal: ctx?.signal })
+            md = { ...md, baseURL: f.root }
+            if (f.subscription) autoSubscription.set(auth.key, f.subscription)
+          } catch (e) {
+            return { plan: "火山方舟订阅", error: discoveryMessage(e), signIn: discoveryFailure(e).signIn ? "expired" : "kept", windows: [] }
+          }
+        }
         // magpie 的账号卡片没有 Base URL 这一项，借一个只带 display 的窗口把它显示出来。
         // aside: true：路由从不读它，用完与否都不影响账号调度。
         const baseWindow = {
           name: "Base URL",
-          display: normalizeBase(auth?.metadata?.baseURL) || base,
+          display: normalizeBase(md.baseURL) || base,
           aside: true,
         }
         // 真实额度和套餐到期（可选，要有 AK/SK）。失败只带 error，不动账号的登录状态：
         // 聊天用的 API key 是好的，AK/SK 错不该让账号下线。已到期的账号也要查：续费后读到新的到期时间才能自动恢复。
-        const q = await quotaFor(auth, base, ctx?.signal)
+        const q = await quotaFor(isAuto ? { ...auth, metadata: md } : auth, base, ctx?.signal)
         if (q?.ok?.subscription) autoSubscription.set(auth.key, q.ok.subscription)
         // 到期时间交给 magpie 的 until，卡片会显示，"到期前用完"路由模式也读它。读到真实值就不用手填。
         // 到期后 fetch 会直接拦截（见 loader），这里同步标成需要重新登录，并说明原因。
@@ -446,4 +598,4 @@ export const VolcenginePlanPlugin = async ({ client }, options = {}) => {
 }
 
 // 不要从入口导出辅助函数（每个导出的函数都会被当成插件调用），测试要用的放在对象上。
-export const _internal = { quotaFor, quotaCache, autoSubscription, expiryOf, parseError, parseResetTime, windowFor, windowKind, windowInfo, suspendedUntil, normalizeBase, parseAccountLine, parseExpiry, beijingDate, apiBase, ENDPOINTS, QUOTA_CODE, PERMANENT_CODES }
+export const _internal = { discover, discoveryCache, discoveryInflight, looksLikeKey, rewriteBase, quotaFor, quotaCache, autoSubscription, expiryOf, parseError, parseResetTime, windowFor, windowKind, windowInfo, suspendedUntil, normalizeBase, parseAccountLine, parseExpiry, beijingDate, apiBase, ENDPOINTS, QUOTA_CODE, PERMANENT_CODES }

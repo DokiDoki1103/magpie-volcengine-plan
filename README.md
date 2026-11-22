@@ -9,9 +9,10 @@
 | 某个账号额度用完（429 `AccountQuotaExceeded`） | 从返回里读出恢复时间，**暂停这个账号到那个时间**，期间不再请求火山，magpie 自动切到下一个账号；周额度还是月额度也从原话里分出来 |
 | 订阅失效（`InvalidSubscription` / `AccountSuspended` / `AccountDisabled`） | 让 magpie 把账号标成需要重新登录，不再往它发请求 |
 | 订阅到期 | 到期后**不再请求火山**；续费后读到新的到期时间自动恢复 |
-| 想看真实额度（可选，要 AccessKey） | 卡片上显示 5 小时 / 周 / 月已用多少、什么时候重置，**到期时间和是否自动续费也自动读取，不用手填** |
+| **只填 AccessKey（推荐）** | **全自动**：识别是 Agent Plan 还是 Coding Plan、自己取聊天用的 API key、定 Base URL，并读 5 小时 / 周 / 月额度、到期时间、是否自动续费。你只需要给 `ak=… sk=…` |
+| 手填 API key，再可选加 AccessKey | 聊天用你填的 key；加了 AccessKey 就同样读真实额度和到期 |
 
-没有 AccessKey 也能用：只靠 429 事后暂停，到期日手填。
+没有 AccessKey 也能用：手填 API key，只靠 429 事后暂停，到期日手填。
 
 ## 安装
 
@@ -37,8 +38,30 @@ kubectl exec deploy/magpie -- /magpie plugin add github:DokiDoki1103/magpie-volc
 
 在 magpie 里点"添加账号"，两步：
 
-1. **订阅类型**下拉：`plan` / `coding` / `自定义地址`。选前两个就不用写地址。
-2. **一行**，空格分隔，除 key 以外都可省略：
+1. **订阅类型**下拉：`自动识别`（推荐）/ `plan` / `coding` / `自定义地址`。
+2. **一行**，空格分隔。
+
+### 推荐：自动识别，只填 AccessKey
+
+下拉选 `自动识别`，这一行写：
+
+```text
+主力 ak=AKLTxxxx sk=xxxx          # 名称可省略
+ak=AKLTxxxx sk=xxxx
+```
+
+插件会自己：
+
+1. 识别套餐类型（Agent Plan / Coding Plan，个人版或团队版）；
+2. 取这个套餐专用的 API key（只放内存，**不写进保存的数据**）；
+3. 定 Base URL（Agent → `/api/plan`，Coding → `/api/coding`）；
+4. 读额度、到期时间、是否自动续费。
+
+API key 被你在火山控制台轮换后，插件收到 401 会**自动重新取一次再重试**，不用你更新。识别失败时会说清楚原因：AccessKey 不对 / 没有订阅（会标成需要重新登录）、没有可用的 key、读取 key 被火山拒绝、临时网络故障。
+
+### 手填 API key
+
+下拉选 `plan` / `coding`，这一行写：
 
 ```text
 名称 API-key 到期日 ak=AccessKeyID sk=SecretAccessKey
@@ -52,22 +75,33 @@ kubectl exec deploy/magpie -- /magpie plugin add github:DokiDoki1103/magpie-volc
 ark-xxxxxxxx                                        # 只有 key，标题用 magpie 默认的 "API key …尾号"
 ```
 
+- 有 `ak=` `sk=` 时，行里只剩一项：像 API key（`ark-` 开头、UUID、32 位以上的字母数字）就是 key，否则当作名称，走自动识别。
 - `名称` 就是卡片标题，也是账号 ID：同名再次添加会替换旧账号。名称里不能有空格。
-- 到期日格式 `YYYY-MM-DD`，按北京时间当天 23:59:59 到期。
+- 到期日格式 `YYYY-MM-DD`，按北京时间当天 23:59:59 到期；读得到真实到期时间就不需要填。
 - `ak=` 和 `sk=` 要一起写；位置随意，`region=` 默认 `cn-beijing`。
 - 选了"自定义地址"时，在这一行里再写一个 `https://…` 的 Base URL。
 
-**换 key / 续费后改日期**：用同名重新添加一次。
+**换 key / 续费后改日期**：自动识别的账号都不用管；手填的账号用同名重新添加一次。
 
-## 真实额度与到期（可选，要 AccessKey）
+## AccessKey：自动识别、真实额度与到期
 
 火山没有用 Ark API key 查额度的接口，要用火山账号的 **AccessKey**（IAM 访问密钥，和 `ark-…` 的 API key 是两套东西）调控制面：
 
 1. 火山控制台 → 访问控制（IAM）→ 访问密钥，创建一对 AK/SK。
-2. 给这个 IAM 用户授予方舟（ark）的**只读**权限。
+2. 给这个 IAM 用户授予方舟（ark）的权限。**自动识别要读取 API key 明文**（`ListApiKeys` + `GetRawApiKey`），需要比"只读额度"更大的权限；只想查额度、聊天仍手填 key 的话，只读权限就够。
 3. 添加账号时带上 `ak=… sk=…`。
 
 **每个火山账号各自一套 AccessKey。** 只给你最看重的几个账号配也行，其余照旧。
+
+### 安全说明（自动识别）
+
+AccessKey 能读到账号的聊天 API key，所以**它比 API key 更敏感**：
+
+- AccessKey 和 Secret 明文保存在 magpie 的 `plugin-auth.json`（权限 600），谁能读到 magpie 的数据目录就能拿到。
+- 聊天 API key 本身**不落盘**，只在内存里，进程重启后重新取。
+- `GetRawApiKey` 是火山定义的敏感凭证读取，火山那边可能有审计记录；个人版也可能被协议 / Access 闸门拒绝，被拒时插件如实报告，不绕过。
+- 插件只调只读接口：不轮换、不创建、不禁用任何 key。
+- 建议给这对 AccessKey 单独建一个 IAM 用户，只给方舟相关权限，并定期轮换。
 
 读到的内容：
 
@@ -98,8 +132,9 @@ ark-xxxxxxxx                                        # 只有 key，标题用 mag
 - `GetAFPUsage`：额度桶是 `{Quota, Used, SubscribeTime, ResetTime}`，`ResetTime` 是毫秒；档位字段是 `PlanType`；另有不展示的 `AFPDaily`。
 - `GetSeatInfo`：个人版返回一个**全空的对象**（不报错），不能当作有席位。
 - `GetCodingPlanUsage`：没有 coding 套餐的账号返回 `{"Status":"Reclaimed"}` 而不是窗口，插件把它当作订阅已结束。
+- **自动识别（个人版 Agent Plan）整条链路已端到端验证**：`GetPersonalPlan`（Agent 有数据、Coding 返回 `ResourceNotFound.Plan`）→ `ListApiKeys`（`Filter.Scene="RealAgentPlanPersonal"`，列表里的 `Key` 是打码的）→ `GetRawApiKey({Id})` 取回 46 位 `ark-…` 明文 → 用它发聊天请求，认证通过。另外验证了：普通账号级 key 池里的 36 位 key 打 `/api/plan` 会 401 `API key format is incorrect`，所以必须走专属池。
 
-**还没有在真实账号上验证的**：有有效订阅的 Coding Plan（`QuotaUsage` 的真实形状）、团队版席位（`GetAgentPlanSeatAFPUsage`、席位的 `ExpiredTime`）、`AutoRenew: true` 的账号。这几条目前按社区工具的代码实现。你有这类账号的话，用下面的探测脚本跑一遍，把结果（扫过敏感信息）发 issue，我来核对解析。
+**还没有在真实账号上验证的**：有有效订阅的 Coding Plan（`QuotaUsage` 的真实形状，以及 Coding 个人版用普通 key 池取 key 这一步）、团队版席位（`GetAgentPlanSeatAFPUsage`、席位的 `ExpiredTime` 和 `GetSeatInfo.ApiKey`）、`AutoRenew: true` 的账号。这几条按火山官方 `ark-cli` 文档和社区工具的代码实现。你有这类账号的话，用下面的探测脚本跑一遍，把结果（扫过敏感信息）发 issue，我来核对。
 
 用探测脚本看一眼真实返回（AK/SK 走环境变量，不要写在命令行里）：
 
@@ -146,8 +181,9 @@ npm test
 
 - `test/plugin.test.mjs`：429 暂停、永久错误、手填到期、登录解析。
 - `test/quota.test.mjs`：控制面签名、窗口解析、三条取数路径、套餐到期自动读取与拦截、与 429 暂停合并。
+- `test/discover.test.mjs`：自动识别（Agent / Coding / 团队版、多把 key 的选择、失败分类）、登录解析、识别结果缓存与并发、key 被轮换后重试、明文 key 不落盘。
 
-测试里的接口返回是 mock。个人版 Agent Plan 和"Coding 已回收"的样本取自真实返回（见上面的验证情况，已去掉账号标识）；Coding Plan 有效订阅、团队版席位、自动续费的样本来自社区工具的代码，**不等于火山的真实返回**。签名的单元测试是回归向量加独立推导的对照，只保证以后改动不会悄悄变样；签名与火山一致这件事，已经由上面的真实调用验证过。
+测试里的接口返回是 mock。个人版 Agent Plan、"Coding 已回收"和自动识别流程的样本取自真实返回（见上面的验证情况，已去掉账号标识）；Coding Plan 有效订阅、团队版席位、自动续费的样本来自官方文档和社区工具的代码，**不等于火山的真实返回**。签名的单元测试是回归向量加独立推导的对照，只保证以后改动不会悄悄变样；签名与火山一致这件事，已经由上面的真实调用验证过。
 
 ## 局限
 

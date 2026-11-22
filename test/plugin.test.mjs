@@ -95,7 +95,7 @@ ok(r5.status === 429 && saved.length === before, "普通限流 429 不触发暂�
 // 7) 每账号自定义名称和 Base URL
 const method = plugin.auth.methods[0]
 ok(method.prompts.map((p) => p.key).join() === "type,account", "登录两步：订阅类型下拉 + 一行输入")
-ok(method.prompts[0].type === "select" && method.prompts[0].options.map((o) => o.value).join() === "plan,coding,custom", "下拉选项：plan / coding / 自定义地址")
+ok(method.prompts[0].type === "select" && method.prompts[0].options.map((o) => o.value).join() === "auto,plan,coding,custom", "下拉选项：自动识别 / plan / coding / 自定义地址")
 const r6 = await method.authorize({ account: "  备用1  https://example.com/api/plan/v1/  ark-x " })
 ok(r6.type === "success" && r6.key === "ark-x" && r6.metadata.name === "备用1", "三项：名称存 metadata.name，key 去空白")
 ok(r6.accountId === "备用1" && !("email" in r6.metadata), "名称作 accountId（卡片标题），不写 metadata.email")
